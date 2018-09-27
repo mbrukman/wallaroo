@@ -22,10 +22,13 @@ use "../guid"
 class Dag[V: Any val]
   let _nodes: Map[U128, DagNode[V]] = _nodes.create()
   let _edges: Array[(DagNode[V], DagNode[V])] = _edges.create()
+  let _sinks: SetIs[DagNode[V]] = _sinks.create()
 
   fun ref add_node(value: V, id': U128 = 0): U128 =>
     let id = if id' == 0 then _gen_guid() else id' end
-    _nodes(id) = DagNode[V](value, id)
+    let node = DagNode[V](value, id)
+    _nodes(id) = node
+    _sinks.set(node)
     id
 
   fun contains(id: U128): Bool =>
@@ -66,11 +69,29 @@ class Dag[V: Any val]
         _edges.push((from, to))
         from.add_output(to)
         to.add_input(from)
+        if _sinks.contains(from) then
+          _sinks.unset(from)
+        end
       end
     else
       @printf[I32]("Failed to add edge to graph\n".cstring())
       error
     end
+
+  fun merge(dag: Dag[V]) ? =>
+    for (n_id, n) in dag._nodes.pairs() do
+      if _nodes.contains(n_id) then
+        @printf[I32]("Can't merge Dag with duplicate node id\n".cstring())
+        error
+      end
+      add_node(n, n_id)
+    end
+    for (from, to) in dag._edges.pairs() do
+      add_edge(from.id, to.id)
+    end
+
+  fun sinks(): Iterator[this->DagNode[V]] =>
+    _sinks.values()
 
   fun is_empty(): Bool => _nodes.size() == 0
 

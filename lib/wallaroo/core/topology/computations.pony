@@ -41,6 +41,8 @@ interface StateComputation[In: Any val, Out: Any val, S: State ref] is
     ((Out | Array[Out] val | None),
      (StateChange[S] ref | DirectStateChange | None))
 
+  fun initial_state(): S
+
   fun name(): String
 
   fun state_change_builders(): Array[StateChangeBuilder[S]] val

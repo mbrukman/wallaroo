@@ -96,10 +96,52 @@ trait BasicPipeline
   fun apply(i: USize): RunnerBuilder ?
   fun size(): USize
 
-class Pipeline[In: Any val, Out: Any val] is BasicPipeline
+class Pipeline[Out: Any val] is BasicPipeline
   let _pipeline_id: USize
   let _name: String
   let _app_name: String
+
+  let _stages: Dag[RunnerBuilder]
+  // ASSUMPTION: A pipeline has a single sink node
+  let _dag_sink_ids: Array[RoutingId]
+
+  new create(app_name: String, p_id: USize, n: String,
+    stages: Dag[RunnerBuilder] = Dag[RunnerBuilder],
+    dag_sink_ids: Array[RoutingId] = Array[RoutingId])
+  =>
+    _pipeline_id = p_id
+    _name = n
+    _app_name = app_name
+    _stages = stages
+    _dag_sink_ids = dag_sink_ids
+
+  fun merge(pipeline: Pipeline[Out]): Pipeline[Out] =>
+    _stages.merge(pipeline._stages)
+    _dag_sink_ids.append(pipeline._dag_sink_ids)
+    Pipeline[Out](_app_name, _pipeline_id, _name, _stages, _dag_sink_ids)
+
+  fun to[Next: Any val](next: ComputationBuilder[Out, Next]): Pipeline[Next] =>
+    let node_id = _stages.add_node()
+    for sink_id in _dag_sink_ids.values() do
+      _stages.add_edge(sink_id, node_id)
+    end
+    Pipeline[Next](_app_name, _pipeline_id, _name, _stages, [node_id])
+
+  fun to_state[Next: Any val, S: State ref](
+    next: StateComputation[Out, Next, S] val): Pipeline[Next]
+  =>
+    let node_id = _stages.add_node()
+    for sink_id in _dag_sink_ids.values() do
+      _stages.add_edge(sink_id, node_id)
+    end
+    Pipeline[Next](_app_name, _pipeline_id, _name, _stages, [node_id])
+
+  fun graph(): Dag[RunnerBuilder] =>
+    _stages
+
+
+
+
   let _runner_builders: Array[RunnerBuilder]
   let _source_listener_builder_builder: SourceListenerBuilderBuilder
   var _sink_builders: Array[SinkBuilder] = Array[SinkBuilder]
