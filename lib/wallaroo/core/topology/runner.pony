@@ -40,8 +40,8 @@ interface Runner
   // and a U64 indicating the last timestamp for calculating the duration of
   // the computation
   fun ref run[D: Any val](metric_name: String, pipeline_time_spent: U64,
-    data: D, producer_id: RoutingId, producer: Producer ref, router: Router,
-    target_id_router: TargetIdRouter,
+    data: D, key: Key, producer_id: RoutingId, producer: Producer ref,
+    router: Router, target_id_router: TargetIdRouter,
     i_msg_uid: MsgId, frac_ids: FractionalMessageId,
     latest_ts: U64, metrics_id: U16, worker_ingress_ts: U64,
     metrics_reporter: MetricsReporter ref): (Bool, U64)
@@ -111,11 +111,11 @@ class val RunnerSequenceBuilder is RunnerBuilder
     auth: AmbientAuth,
     next_runner: (Runner iso | None) = None,
     router: (Router | None) = None,
-    pre_state_target_ids': Array[RoutingId] val = recover Array[RoutingId] end):
-      Runner iso^
+    pre_state_target_ids': Array[RoutingId] val = recover Array[RoutingId] end,
+    grouper: (Shuffler | KeyGrouper | None) = None): Runner iso^
   =>
     var remaining: USize = _runner_builders.size()
-    var latest_runner: Runner iso = RouterRunner
+    var latest_runner: Runner iso = RouterRunner(grouper)
     while remaining > 0 do
       let next_builder: (RunnerBuilder | None) =
         try
@@ -180,14 +180,14 @@ class val ComputationRunnerBuilder[In: Any val, Out: Any val] is RunnerBuilder
     auth: AmbientAuth,
     next_runner: (Runner iso | None) = None,
     router: (Router | None) = None,
-    pre_state_target_ids': Array[RoutingId] val = recover Array[RoutingId] end):
-      Runner iso^
+    pre_state_target_ids': Array[RoutingId] val = recover Array[RoutingId] end,
+    grouper: (Shuffler | KeyGrouper | None) = None): Runner iso^
   =>
     match (consume next_runner)
     | let r: Runner iso =>
       ComputationRunner[In, Out](_comp_builder(), consume r)
     else
-      ComputationRunner[In, Out](_comp_builder(), RouterRunner)
+      ComputationRunner[In, Out](_comp_builder(), RouterRunner(grouper))
     end
 
   fun name(): String => _comp_builder().name()
@@ -234,36 +234,35 @@ class val PreStateRunnerBuilder[In: Any val, Out: Any val,
   =>
     r
 
-class val StateRunnerBuilder[S: State ref] is RunnerBuilder
+class val StateRunnerBuilder[In: Any val, Out: Any val, S: State ref] is
+  RunnerBuilder
+  //!@
   // This is the id for the entire state collection. It's used, for example,
   // to route messages to a Key that exists on another worker where we don't
   // know the specific routing ids of the state steps.
-  let _id: RoutingId
-  let _state_builder: StateBuilder[S]
-  let _state_name: String
-  let _state_change_builders: Array[StateChangeBuilder[S]] val
 
-  new val create(state_builder: StateBuilder[S],
-    state_name': String,
-    state_change_builders: Array[StateChangeBuilder[S]] val)
-  =>
-    _state_builder = state_builder
-    _state_name = state_name'
-    _state_change_builders = state_change_builders
-    _id = RoutingIdGenerator()
+  let _state_comp: StateComputation[In, Out, S] val
+  let _state_name: StateName
+
+  new val create(state_comp: StateComputation[In, Out, S] val) =>
+    _state_comp = state_comp
+    _state_name = RoutingIdGenerator().string()
 
   fun apply(event_log: EventLog,
     auth: AmbientAuth,
     next_runner: (Runner iso | None) = None,
     router: (Router | None) = None,
-    pre_state_target_ids': Array[RoutingId] val = recover Array[RoutingId] end):
-      Runner iso^
+    pre_state_target_ids': Array[RoutingId] val = recover Array[RoutingId] end,
+    grouper: (Shuffler | KeyGrouper | None) = None): Runner iso^
   =>
-    let sr = StateRunner[S](_state_name, _state_builder, event_log, auth)
-    for scb in _state_change_builders.values() do
-      sr.register_state_change(scb)
+    match (consume next_runner)
+    | let r: Runner iso =>
+      StateRunner[In, Out, S](_state_name, _state_comp, event_log, auth,
+        consume r)
+    else
+      StateRunner[In, Out, S](_state_name, _state_comp, event_log, auth,
+        RouterRunner(grouper))
     end
-    sr
 
   fun name(): String => _state_name + " StateRunnerBuilder"
   fun state_name(): StateName => _state_name
@@ -380,8 +379,8 @@ class ComputationRunner[In: Any val, Out: Any val]
     _next = consume next
 
   fun ref run[D: Any val](metric_name: String, pipeline_time_spent: U64,
-    data: D, producer_id: RoutingId, producer: Producer ref, router: Router,
-    target_id_router: TargetIdRouter,
+    data: D, key: Key, producer_id: RoutingId, producer: Producer ref,
+    router: Router, target_id_router: TargetIdRouter,
     i_msg_uid: MsgId, frac_ids: FractionalMessageId,
     latest_ts: U64, metrics_id: U16, worker_ingress_ts: U64,
     metrics_reporter: MetricsReporter ref): (Bool, U64)
@@ -406,8 +405,8 @@ class ComputationRunner[In: Any val, Out: Any val]
         match result
         | None => (true, computation_end)
         | let output: Out =>
-          _next.run[Out](metric_name, pipeline_time_spent, output, producer_id,
-            producer, router, target_id_router,
+          _next.run[Out](metric_name, pipeline_time_spent, output, key,
+            producer_id, producer, router, target_id_router,
             i_msg_uid, frac_ids,
             computation_end, new_metrics_id, worker_ingress_ts,
             metrics_reporter)
@@ -433,7 +432,7 @@ class ComputationRunner[In: Any val, Out: Any val]
             end
 
             (let f, let ts) = _next.run[Out](metric_name,
-              pipeline_time_spent, output, producer_id, producer,
+              pipeline_time_spent, output, key, producer_id, producer,
               router, target_id_router,
               i_msg_uid, o_frac_ids,
               computation_end, new_metrics_id, worker_ingress_ts,
@@ -495,8 +494,8 @@ class PreStateRunner[In: Any val, Out: Any val, S: State ref]
     _partition_function = partition_function
 
   fun ref run[D: Any val](metric_name: String, pipeline_time_spent: U64,
-    data: D, producer_id: RoutingId, producer: Producer ref, router: Router,
-    target_id_router: TargetIdRouter,
+    data: D, key: Key, producer_id: RoutingId, producer: Producer ref,
+    router: Router, target_id_router: TargetIdRouter,
     i_msg_uid: MsgId, frac_ids: FractionalMessageId,
     latest_ts: U64, metrics_id: U16, worker_ingress_ts: U64,
     metrics_reporter: MetricsReporter ref): (Bool, U64)
@@ -515,8 +514,8 @@ class PreStateRunner[In: Any val, Out: Any val, S: State ref]
           StateComputationWrapper[In, Out, S](input, _state_name, key,
             _state_comp, _target_ids)
         router.route[StateComputationWrapper[In, Out, S]](
-          metric_name, pipeline_time_spent, processor, producer_id, producer,
-          i_msg_uid, frac_ids, latest_ts, metrics_id + 1,
+          metric_name, pipeline_time_spent, processor, key, producer_id,
+          producer, i_msg_uid, frac_ids, latest_ts, metrics_id + 1,
           worker_ingress_ts)
       else
         @printf[I32]("StateRunner: Input was not type In!\n"
@@ -542,12 +541,14 @@ class PreStateRunner[In: Any val, Out: Any val, S: State ref]
   =>
     r
 
-class StateRunner[S: State ref] is (Runner & RollbackableRunner &
-  SerializableStateRunner)
-  let _canonical_state: S
+class StateRunner[In: Any val, Out: Any val, S: State ref] is (Runner &
+  RollbackableRunner & SerializableStateRunner)
   let _state_name: StateName
+  let _canonical_state: S
+  let _state_comp: StateComputation[In, Out, S] val
+  let _next_runner: Runner
+
   var _state_map: Map[Key, S] = _state_map.create()
-  let _state_builder: {(): S} val
   //TODO: this needs to be per-computation, rather than per-runner
   let _state_change_repository: StateChangeRepository[S] ref
   let _event_log: EventLog
@@ -556,36 +557,36 @@ class StateRunner[S: State ref] is (Runner & RollbackableRunner &
   let _auth: AmbientAuth
   var _id: (U128 | None)
 
-  new iso create(state_name': StateName, state_builder: {(): S} val,
-    event_log: EventLog, auth: AmbientAuth)
+  new iso create(state_name': StateName,
+    state_comp: StateComputation[In, Out, S] val,
+    event_log: EventLog, auth: AmbientAuth,
+    next_runner: Runner iso)
   =>
     _state_name = state_name'
-    _state_builder = state_builder
-    _canonical_state = _state_builder()
-    _state_change_repository = StateChangeRepository[S]
+    _state_comp = state_comp
+    _canonical_state = _state_comp.initial_state()
+    _next_runner = consume next_runner
     _event_log = event_log
+    //!@
     _id = None
     _auth = auth
 
+  //!@
   fun ref set_step_id(id: U128) =>
     _id = id
-
-  fun ref register_state_change(scb: StateChangeBuilder[S]) : U64 =>
-    _state_change_repository.make_and_register(scb)
 
   fun ref rollback(payload: ByteSeq val) =>
     replace_serialized_state(payload)
 
   fun ref run[D: Any val](metric_name: String, pipeline_time_spent: U64,
-    data: D, producer_id: RoutingId, producer: Producer ref, router: Router,
-    target_id_router: TargetIdRouter,
+    data: D, key: Key, producer_id: RoutingId, producer: Producer ref,
+    router: Router, target_id_router: TargetIdRouter,
     i_msg_uid: MsgId, frac_ids: FractionalMessageId,
     latest_ts: U64, metrics_id: U16, worker_ingress_ts: U64,
     metrics_reporter: MetricsReporter ref): (Bool, U64)
   =>
     match data
-    | let sp: StateProcessor[S] =>
-      let key = sp.key()
+    | let input: In =>
       let state =
         try
           _state_map(key)?
@@ -596,7 +597,7 @@ class StateRunner[S: State ref] is (Runner & RollbackableRunner &
           else
             Fail()
           end
-          let new_state = _state_builder()
+          let new_state = _state_comp.initial_state()
           _state_map(key) = new_state
           new_state
         end
@@ -690,7 +691,7 @@ class StateRunner[S: State ref] is (Runner & RollbackableRunner &
     else
       // We got the key but no accompanying state, so we initialize
       // ourselves.
-      _state_map(key) = _state_builder()
+      _state_map(key) = _state_comp.initial_state()
       step.register_key(s_name, key)
     end
 
@@ -701,7 +702,7 @@ class StateRunner[S: State ref] is (Runner & RollbackableRunner &
         try
           _state_map.remove(key)?._2
         else
-          _state_builder()
+          _state_comp.initial_state()
         end
       Serialised(SerialiseAuth(_auth), state)?
         .output(OutputSerialisedAuth(_auth))
@@ -794,19 +795,26 @@ interface Stringablike
   fun string(): String
 
 class iso RouterRunner
+  let _grouper: Grouper
+
+  new create(g: (Shuffler | KeyGrouper | None)) =>
+    match g
+    | let s: Shuffler => _grouper = s
+    | let kg: KeyGrouper => _grouper = kg
+    else
+      _grouper = OneToOneGrouper
+    end
+
   fun ref run[D: Any val](metric_name: String, pipeline_time_spent: U64,
-    data: D, producer_id: RoutingId, producer: Producer ref, router: Router,
-    target_id_router: TargetIdRouter,
+    data: D, key: Key, producer_id: RoutingId, producer: Producer ref,
+    router: Router, target_id_router: TargetIdRouter,
     i_msg_uid: MsgId, frac_ids: FractionalMessageId,
     latest_ts: U64, metrics_id: U16, worker_ingress_ts: U64,
     metrics_reporter: MetricsReporter ref): (Bool, U64)
   =>
-    match router
-    | let r: Router =>
-      r.route[D](metric_name, pipeline_time_spent, data, producer_id,
-        producer, i_msg_uid, frac_ids, latest_ts, metrics_id,
-        worker_ingress_ts)
-    end
+    let key = _grouper[D](data)
+    router.route[D](metric_name, pipeline_time_spent, data, key, producer_id,
+      producer, i_msg_uid, frac_ids, latest_ts, metrics_id, worker_ingress_ts)
 
   fun name(): String => "Router runner"
   fun state_name(): StateName => ""

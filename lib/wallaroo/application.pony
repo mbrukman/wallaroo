@@ -75,7 +75,8 @@ trait BasicPipeline
   fun is_finished(): Bool
   fun size(): USize
 
-type Stage is (RunnerBuilder | SinkBuilder | SourceConfig)
+type Stage is (RunnerBuilder | SinkBuilder | SourceConfig
+  | Shuffle | GroupByKey)
 
 class Pipeline[Out: Any val] is BasicPipeline
   let _pipeline_id: USize
@@ -84,6 +85,9 @@ class Pipeline[Out: Any val] is BasicPipeline
   let _stages: Dag[Stage]
   let _dag_sink_ids: Array[RoutingId]
   var _finished: Bool
+
+  var _last_is_shuffle: Bool
+  var _last_is_group_by_key: Bool
 
   new from_source(p_id: USize, n: String,
     source_config: TypedSourceConfig[Out])
@@ -99,31 +103,47 @@ class Pipeline[Out: Any val] is BasicPipeline
   new create(p_id: USize, n: String,
     stages: Dag[Stage] = Dag[Stage],
     dag_sink_ids: Array[RoutingId] = Array[RoutingId],
-    finished: Bool = false)
+    finished: Bool = false,
+    last_is_shuffle: Bool = false,
+    last_is_group_by_key: Bool = false)
   =>
     _pipeline_id = p_id
     _name = n
     _stages = stages
     _dag_sink_ids = dag_sink_ids
     _finished = finished
+    _last_is_shuffle = last_is_shuffle
+    _last_is_group_by_key = last_is_group_by_key
 
   fun is_finished(): Bool => _finished
 
   fun ref merge(pipeline: Pipeline[Out]): Pipeline[Out] =>
-    if not _finished then
+    if _finished then
+      _try_merge_with_finished_pipeline()
+    elseif (_last_is_shuffle and not pipeline._last_is_shuffle) or
+      (not _last_is_shuffle and pipeline._last_is_shuffle
+    then
+      _only_one_is_shuffle()
+    elseif (_last_is_group_by_key and not pipeline._last_is_group_by_key) or
+      (not _last_is_group_by_key and pipeline._last_is_group_by_key
+    then
+      _only_one_is_group_by_key()
+    else
+      // Successful merge
       _stages.merge(pipeline._stages)
       _dag_sink_ids.append(pipeline._dag_sink_ids)
-      Pipeline[Out](_pipeline_id, _name, _stages, _dag_sink_ids)
-    else
-      _try_add_to_finished_pipeline()
-      Pipeline[Out](_pipeline_id, _name, _stages, _dag_sink_ids)
+      return Pipeline[Out](_pipeline_id, _name, _stages, _dag_sink_ids
+        where last_is_shuffle = _last_is_shuffle,
+        last_is_group_by_key = _last_is_group_by_key)
     end
+    Pipeline[Out](_pipeline_id, _name, _stages, _dag_sink_ids)
 
-  fun ref to[Next: Any val](next: ComputationBuilder[Out, Next]):
+  fun ref to[Next: Any val](comp_builder: ComputationBuilder[Out, Next]):
     Pipeline[Next]
   =>
     if not _finished then
-      let node_id = _stages.add_node()
+      let runner_builder = ComputationRunnerBuilder[Last, Next](comp_builder)
+      let node_id = _stages.add_node(runner_builder)
       for sink_id in _dag_sink_ids.values() do
         _stages.add_edge(sink_id, node_id)
       end
@@ -134,10 +154,11 @@ class Pipeline[Out: Any val] is BasicPipeline
     end
 
   fun ref to_state[Next: Any val, S: State ref](
-    next: StateComputation[Out, Next, S] val): Pipeline[Next]
+    s_comp: StateComputation[Out, Next, S] val): Pipeline[Next]
   =>
     if not _finished then
-      let node_id = _stages.add_node()
+      let runner_builder = StateRunnerBuilder[S](s_comp)
+      let node_id = _stages.add_node(runner_builder)
       for sink_id in _dag_sink_ids.values() do
         _stages.add_edge(sink_id, node_id)
       Pipeline[Next](_pipeline_id, _name, _stages, [node_id])
@@ -161,6 +182,33 @@ class Pipeline[Out: Any val] is BasicPipeline
       Pipeline[Next](_pipeline_id, _name, _stages, _dag_sink_ids)
     end
 
+  fun ref shuffle(): Pipeline[Out] =>
+    if not _finished then
+      let node_id = _stages.add_node(Shuffle)
+      for sink_id in _dag_sink_ids.values() do
+        _stages.add_edge(sink_id, node_id)
+      end
+      Pipeline[Out](_pipeline_id, _name, _stages, [node_id]
+        where last_is_shuffle = true)
+    else
+      _try_add_to_finished_pipeline()
+      Pipeline[Out](_pipeline_id, _name, _stages, _dag_sink_ids)
+    end
+
+  fun ref group_by_key(pf: PartitionFunction[Out]): Pipeline[Out] =>
+    if not _finished then
+      let node_id = _stages.add_node(TypedGroupByKey[Out](pf))
+      for sink_id in _dag_sink_ids.values() do
+        _stages.add_edge(sink_id, node_id)
+      end
+      Pipeline[Out](_pipeline_id, _name, _stages, [node_id]
+        where last_is_group_by_key = true)
+    else
+      _try_add_to_finished_pipeline()
+      Pipeline[Out](_pipeline_id, _name, _stages, _dag_sink_ids)
+    end
+
+
   fun graph(): Dag[Stage] => _stages
 
   fun source_id(): USize => _pipeline_id
@@ -174,7 +222,14 @@ class Pipeline[Out: Any val] is BasicPipeline
   fun _try_add_to_finished_pipeline() =>
     FatalUserError("You can't add further stages after a sink!")
 
+  fun _try_merge_with_finished_pipeline() =>
+    FatalUserError("You can't merge with a terminated pipeline!")
 
+  fun _only_one_is_shuffle() =>
+    FatalUserError("A pipeline ending with shuffle can only be merged with another!")
+
+  fun _only_one_is_group_by_key() =>
+    FatalUserError("A pipeline ending with group_by_key can only be merged with another!")
 
 
 

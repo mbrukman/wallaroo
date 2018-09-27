@@ -271,7 +271,7 @@ class val LocalTopology
   fun ne(that: box->LocalTopology): Bool => not eq(that)
 
 actor LocalTopologyInitializer is LayoutInitializer
-  let _application: Application val
+  let _application: Application
   let _worker_name: WorkerName
   let _env: Env
   let _auth: AmbientAuth
@@ -340,7 +340,7 @@ actor LocalTopologyInitializer is LayoutInitializer
 
   var _t: USize = 0
 
-  new create(app: Application val, worker_name: WorkerName, env: Env,
+  new create(app: Application, worker_name: WorkerName, env: Env,
     auth: AmbientAuth, connections: Connections,
     router_registry: RouterRegistry, metrics_conn: MetricsSink,
     is_initializer: Bool, data_receivers: DataReceivers,

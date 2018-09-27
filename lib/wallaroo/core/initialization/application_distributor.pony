@@ -35,14 +35,17 @@ actor ApplicationDistributor is Distributor
   let _auth: AmbientAuth
   let _routing_id_gen: RoutingIdGenerator = RoutingIdGenerator
   let _local_topology_initializer: LocalTopologyInitializer
-  let _application: Application val
+  let _application: Application
+  let _pipeline: BasicPipeline val
 
-  new create(auth: AmbientAuth, application: Application val,
+  new create(auth: AmbientAuth, application: Application,
+    pipeline: BasicPipeline val,
     local_topology_initializer: LocalTopologyInitializer)
   =>
     _auth = auth
     _local_topology_initializer = local_topology_initializer
     _application = application
+    _pipeline = pipeline
 
   be distribute(cluster_initializer: (ClusterInitializer | None),
     worker_count: USize, worker_names: Array[String] val,
