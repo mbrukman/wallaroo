@@ -32,23 +32,20 @@ use "wallaroo/core/topology"
 actor Main
   new create(env: Env) =>
     try
-      let letter_partition = Partitions[Votes val](
-        LetterPartitionFunction, PartitionsFileReader("letters.txt",
-          env.root as AmbientAuth))
+      let application = Application(env, "Alphabet Contest")
 
-      let application = recover val
-        Application("Alphabet Popularity Contest")
-          .new_pipeline[Votes val, LetterTotal val]("Alphabet Votes",
-            TCPSourceConfig[Votes val].from_options(VotesDecoder,
-              TCPSourceConfigCLIParser(env.args)?(0)?))
-            .to_state_partition[LetterTotal val,
-              LetterState](AddVotes, LetterStateBuilder, "letter-state",
-              letter_partition where multi_worker = true)
+      let pipeline = recover val
+          let votes = Wallaroo.source[Votes val]("Alphabet Votes",
+                TCPSourceConfig[Votes val].from_options(VotesDecoder,
+                  TCPSourceConfigCLIParser(env.args)?(0)?))
+
+          votes
+            .to_state[LetterTotal val, LetterState](AddVotes)
             .to_sink(TCPSinkConfig[LetterTotal val].from_options(
-              LetterTotalEncoder,
-              TCPSinkConfigCLIParser(env.args)?(0)?))
-      end
-      Startup(env, application, "alphabet-contest")
+              LetterTotalEncoder, TCPSinkConfigCLIParser(env.args)?(0)?))
+        end
+
+      application.start(pipeline)
     else
       @printf[I32]("Couldn't build topology\n".cstring())
     end
@@ -109,6 +106,9 @@ primitive AddVotes is StateComputation[Votes val, LetterTotal val, LetterState]
     state_change.update(votes)
 
     (LetterTotal(votes.letter, votes.count + state.count), state_change)
+
+  fun initial_state(): S =>
+    LetterState
 
   fun state_change_builders():
     Array[StateChangeBuilder[LetterState]] val

@@ -62,10 +62,11 @@ actor ApplicationDistributor is Distributor
     @printf[I32]("---------------------------------------------------------\n".cstring())
     @printf[I32]("vvvvvv|Initializing Topologies for Workers|vvvvvv\n\n".cstring())
 
-    match application.validate()
-    | let err_msg: String =>
-      FatalUserError(err_msg)
-    end
+    //!@
+    // match application.validate()
+    // | let err_msg: String =>
+    //   FatalUserError(err_msg)
+    // end
 
     try
       let all_workers_trn = recover trn Array[WorkerName] end

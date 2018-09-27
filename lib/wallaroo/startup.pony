@@ -47,7 +47,8 @@ actor Startup
   let _env: Env
   var _startup_options: StartupOptions = StartupOptions
 
-  let _application: Application val
+  let _application: Application
+  let _pipeline: BasicPipeline val
   let _app_name: String
 
   var _external_host: String = ""
@@ -80,16 +81,14 @@ actor Startup
   var _is_joining: Bool = false
   var _is_recovering: Bool = false
 
-  new create(env: Env, application: Application val,
-    app_name: (String | None))
+  new create(env: Env, application: Application, app_name: String,
+    pipeline: BasicPipeline val)
   =>
     _env = env
     _application = application
-    _app_name = match app_name
-      | let n: String => n
-      else
-        ""
-      end
+    _pipeline = pipeline
+    _app_name = app_name
+
     ifdef "resilience" then
       @printf[I32]("****RESILIENCE MODE is active****\n".cstring())
     end
