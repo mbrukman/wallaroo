@@ -40,6 +40,7 @@ actor Main
                   TCPSourceConfigCLIParser(env.args)?(0)?))
 
           votes
+            .group_by_key(ExtractFirstLetter)
             .to_state[LetterTotal val, LetterState](AddVotes)
             .to_sink(TCPSinkConfig[LetterTotal val].from_options(
               LetterTotalEncoder, TCPSinkConfigCLIParser(env.args)?(0)?))
@@ -132,7 +133,7 @@ primitive VotesDecoder is FramedSourceHandler[Votes val]
     let count = Bytes.to_u32(data(1)?, data(2)?, data(3)?, data(4)?)
     Votes(letter, count.u64())
 
-primitive LetterPartitionFunction
+primitive ExtractFirstLetter
   fun apply(votes: Votes val): String =>
     votes.letter
 
